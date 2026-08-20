@@ -6,10 +6,17 @@ transaction graph with licit, illicit, and unknown labels, already segmented int
 abstraction the LSTM consumes, so this loader exposes the data as an ordered list
 of per-time-step frames.
 
-Expected raw files (place under data/elliptic/):
+Expected raw files (under data/elliptic/raw/):
   elliptic_txs_features.csv   txId, time_step, then 165 anonymised features
   elliptic_txs_classes.csv    txId, class in {1 illicit, 2 licit, unknown}
   elliptic_txs_edgelist.csv   txId1, txId2 directed edges
+
+The two small files (classes, edgelist) are committed directly. The feature
+matrix is ~690MB uncompressed (full float64 text precision), too large for a
+plain git repo, so it is fetched on first use via PyTorch Geometric's
+EllipticBitcoinDataset downloader, which pulls the identical raw CSVs from
+https://data.pyg.org/datasets/elliptic/ (no Kaggle account needed) and caches
+them locally under the same raw/ layout this loader already expects.
 
 Labels are resolved to a binary illicit indicator: illicit -> 1, licit -> 0,
 unknown -> -1 (masked out of the supervised loss).
@@ -50,10 +57,27 @@ class EllipticLoader:
         self._classes: pd.DataFrame | None = None
         self._edges: pd.DataFrame | None = None
 
+    def _ensure_raw(self) -> Path:
+        """Return the raw/ directory, downloading via PyG if any CSV is missing."""
+        raw_dir = self.root / "raw"
+        required = [
+            "elliptic_txs_features.csv",
+            "elliptic_txs_classes.csv",
+            "elliptic_txs_edgelist.csv",
+        ]
+        if all((raw_dir / name).exists() for name in required):
+            return raw_dir
+
+        from torch_geometric.datasets import EllipticBitcoinDataset
+
+        EllipticBitcoinDataset(root=str(self.root))
+        return raw_dir
+
     def load(self) -> "EllipticLoader":
-        feats = pd.read_csv(self.root / "elliptic_txs_features.csv", header=None)
-        classes = pd.read_csv(self.root / "elliptic_txs_classes.csv")
-        edges = pd.read_csv(self.root / "elliptic_txs_edgelist.csv")
+        raw_dir = self._ensure_raw()
+        feats = pd.read_csv(raw_dir / "elliptic_txs_features.csv", header=None)
+        classes = pd.read_csv(raw_dir / "elliptic_txs_classes.csv")
+        edges = pd.read_csv(raw_dir / "elliptic_txs_edgelist.csv")
 
         # Name the feature columns: col 0 is txId, col 1 is time_step, rest are features.
         n_feats = feats.shape[1] - 2

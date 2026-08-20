@@ -11,3 +11,5 @@ frontend/node_modules/
 frontend/dist/
 *.egg-info/
 !packages/models/checkpoints/*.pt
+data/elliptic/raw/elliptic_txs_features.csv
+data/elliptic/processed/
