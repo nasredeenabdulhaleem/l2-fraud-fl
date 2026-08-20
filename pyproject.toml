@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l2-fraud-fl"
+version = "0.1.0"
+description = "Blockchain fraud detection on Layer 2 rollups using federated learning"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["packages"]
+
+[tool.setuptools.package-dir]
+packages = "packages"
