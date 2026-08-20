@@ -16,9 +16,9 @@ from __future__ import annotations
 import argparse
 
 import flwr as fl
-import numpy as np
 import torch
 
+from packages.data.graph_builder import stratified_split
 from packages.fl import task
 
 
@@ -69,36 +69,6 @@ class FraudFLClient(fl.client.NumPyClient):
         }
 
 
-def _split(snapshots: list, val_frac: float = 0.2, seed: int = 11):
-    """Stratified train/val split: fraud-carrying blocks are held out for both.
-
-    A positional tail-slice biases which blocks land in validation: fraud events
-    are seeded independently per block, so a fixed 80/20 split on unshuffled
-    order can (and did) leave validation with zero positive examples purely by
-    chance, making precision/recall/f1 trivially 0 for every round regardless of
-    model quality. Splitting fraud-carrying and clean blocks separately (each
-    shuffled, each guaranteed at least one block on both sides when available)
-    ensures validation actually exercises the positive class.
-    """
-    rng = np.random.default_rng(seed)
-    idx = np.arange(len(snapshots))
-    has_fraud = np.array([int((s.y == 1).sum()) > 0 for s in snapshots])
-    fraud_idx = rng.permutation(idx[has_fraud])
-    clean_idx = rng.permutation(idx[~has_fraud])
-
-    def _cut(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if len(arr) <= 1:
-            return arr, np.array([], dtype=int)
-        n_val = max(1, round(len(arr) * val_frac))
-        return arr[n_val:], arr[:n_val]
-
-    f_train, f_val = _cut(fraud_idx)
-    c_train, c_val = _cut(clean_idx)
-    train_idx = sorted(np.concatenate([f_train, c_train]))
-    val_idx = sorted(np.concatenate([f_val, c_val]))
-    return [snapshots[i] for i in train_idx], [snapshots[i] for i in val_idx]
-
-
 def main():
     """Launch a single client bound to a non-IID shard produced by the data pipeline."""
     parser = argparse.ArgumentParser()
@@ -117,7 +87,7 @@ def main():
     snapshots = simulator_to_snapshots(blocks)
     shards = partition_non_iid(snapshots, num_clients=args.num_clients)
     my_stream = shards[args.client_id]
-    train_s, val_s = _split(my_stream)
+    train_s, val_s = stratified_split(my_stream)
 
     in_dim = my_stream[0].x.size(1)
     model = task.build_model(in_dim=in_dim)

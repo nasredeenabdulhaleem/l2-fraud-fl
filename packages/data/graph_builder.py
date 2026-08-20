@@ -164,3 +164,41 @@ def client_fraud_rates(client_streams: list[list[Data]]) -> list[float]:
         pos = sum(int((s.y == 1).sum()) for s in stream)
         rates.append(pos / total if total else 0.0)
     return rates
+
+
+# ----------------------------------------------------------------------------
+# Stratified train/val split
+# ----------------------------------------------------------------------------
+
+def stratified_split(
+    snapshots: list[Data], val_frac: float = 0.2, seed: int = 11
+) -> tuple[list[Data], list[Data]]:
+    """Split a snapshot list into train/val, holding out fraud-carrying blocks for both.
+
+    A positional tail-slice biases which blocks land in validation: fraud events
+    are sparse and seeded independently per block, so a fixed 80/20 split on
+    unshuffled order can (and did, on this simulator's default config) leave
+    validation with zero positive examples purely by chance, making
+    precision/recall/f1 trivially 0 regardless of model quality. Splitting
+    fraud-carrying and clean blocks separately (each shuffled, each guaranteed
+    at least one block on both sides when available) ensures validation
+    actually exercises the positive class. Shared by the FL client and the
+    single-node baseline trainer so both are evaluated the same way.
+    """
+    rng = np.random.default_rng(seed)
+    idx = np.arange(len(snapshots))
+    has_fraud = np.array([int((s.y == 1).sum()) > 0 for s in snapshots])
+    fraud_idx = rng.permutation(idx[has_fraud])
+    clean_idx = rng.permutation(idx[~has_fraud])
+
+    def _cut(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if len(arr) <= 1:
+            return arr, np.array([], dtype=int)
+        n_val = max(1, round(len(arr) * val_frac))
+        return arr[n_val:], arr[:n_val]
+
+    f_train, f_val = _cut(fraud_idx)
+    c_train, c_val = _cut(clean_idx)
+    train_idx = sorted(np.concatenate([f_train, c_train]))
+    val_idx = sorted(np.concatenate([f_val, c_val]))
+    return [snapshots[i] for i in train_idx], [snapshots[i] for i in val_idx]
