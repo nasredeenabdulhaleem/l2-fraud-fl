@@ -37,6 +37,18 @@ FLAGGREGATOR_ABI = [
     {"type": "function", "name": "getUpdateRef", "stateMutability": "view",
      "inputs": [{"name": "roundId", "type": "uint64"}, {"name": "client", "type": "address"}],
      "outputs": [{"name": "", "type": "bytes32"}]},
+    {"type": "function", "name": "isClient", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "address"}], "outputs": [{"name": "", "type": "bool"}]},
+    {"type": "function", "name": "getRound", "stateMutability": "view",
+     "inputs": [{"name": "roundId", "type": "uint64"}],
+     "outputs": [{"name": "", "type": "tuple", "components": [
+         {"name": "baseModelRef", "type": "bytes32"},
+         {"name": "globalModelRef", "type": "bytes32"},
+         {"name": "deadline", "type": "uint64"},
+         {"name": "submissionCount", "type": "uint32"},
+         {"name": "open", "type": "bool"},
+         {"name": "finalised", "type": "bool"},
+     ]}]},
     {"type": "event", "name": "RoundOpened", "anonymous": False,
      "inputs": [{"indexed": True, "name": "roundId", "type": "uint64"},
                 {"indexed": False, "name": "baseModelRef", "type": "bytes32"},
@@ -112,3 +124,19 @@ class AggregatorClient:
             round_id, Web3.to_checksum_address(client_address)
         ).call()
         return bytes(ref)
+
+    def is_client(self, client_address: str) -> bool:
+        return bool(self.contract.functions.isClient(
+            Web3.to_checksum_address(client_address)
+        ).call())
+
+    def get_round(self, round_id: int) -> dict:
+        r = self.contract.functions.getRound(round_id).call()
+        return {
+            "base_model_ref": bytes(r[0]),
+            "global_model_ref": bytes(r[1]),
+            "deadline": int(r[2]),
+            "submission_count": int(r[3]),
+            "open": bool(r[4]),
+            "finalised": bool(r[5]),
+        }
