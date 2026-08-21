@@ -27,6 +27,7 @@ _KNOWN_EVENT_TYPES = {
 }
 
 DEMO_MODE = os.getenv("BACKEND_DEMO_MODE", "true").lower() == "true"
+DEMO_NETWORK = os.getenv("TARGET_NETWORK", "arbitrum")
 
 
 # ----------------------------------------------------------------------------
@@ -183,6 +184,7 @@ async def demo_loop():
             "recall": round(min(0.97, base - random.uniform(0, 0.05)), 3),
             "f1": round(base, 3),
             "tx_hash": f"0x{random.randrange(16**32):032x}",
+            "network": DEMO_NETWORK,
         }
         await emit("round_finalised", record)
         await asyncio.sleep(2.0)

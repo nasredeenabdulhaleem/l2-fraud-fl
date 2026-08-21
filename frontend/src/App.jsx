@@ -9,11 +9,17 @@ import {
   CartesianGrid,
 } from "recharts";
 import { useTelemetry } from "./lib/useTelemetry.js";
+import { useOnChain } from "./lib/useOnChain.js";
 
 function short(hex, n = 6) {
   if (!hex) return "";
   return `${hex.slice(0, n)}...${hex.slice(-4)}`;
 }
+
+const EXPLORERS = {
+  arbitrum: "https://sepolia.arbiscan.io/tx/",
+  base: "https://sepolia.basescan.org/tx/",
+};
 
 function Stat({ label, value, sub }) {
   return (
@@ -27,6 +33,7 @@ function Stat({ label, value, sub }) {
 
 export default function App() {
   const { state, connected } = useTelemetry();
+  const onChain = useOnChain();
   const {
     strategy,
     current_round,
@@ -40,8 +47,9 @@ export default function App() {
   const progress = total_rounds ? (current_round / total_rounds) * 100 : 0;
   const submitted = clients.filter((c) => c.submitted).length;
 
-  const explorerBase =
-    strategy && "https://sepolia.arbiscan.io/tx/"; // Arbitrum Sepolia explorer
+  const explorerBase = EXPLORERS[latest?.network] || EXPLORERS.arbitrum;
+  const onChainVerified =
+    latest && onChain.roundId != null && onChain.roundId === latest.round && onChain.finalised;
 
   return (
     <div className="app">
@@ -112,9 +120,21 @@ export default function App() {
           <h3>On-chain finalisation (Aggregator)</h3>
           {latest ? (
             <div>
-              <div style={{ marginBottom: 12 }}>
-                <div className="muted" style={{ fontSize: 12 }}>Latest finalised round</div>
-                <div style={{ fontSize: 22, fontWeight: 800 }}>#{latest.round}</div>
+              <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                <div>
+                  <div className="muted" style={{ fontSize: 12 }}>Latest finalised round</div>
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>#{latest.round}</div>
+                </div>
+                {onChainVerified && (
+                  <span className="pill accent" title="Read directly from the contract via RPC, independent of the backend feed">
+                    verified on-chain ✓
+                  </span>
+                )}
+                {onChain.error && onChain.error !== "not configured" && (
+                  <span className="muted" style={{ fontSize: 11 }} title={onChain.error}>
+                    on-chain read unavailable
+                  </span>
+                )}
               </div>
               <div style={{ marginBottom: 8 }}>
                 <div className="muted" style={{ fontSize: 12 }}>Global model reference (tx)</div>
