@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .env
+wallets.local.json
 data/cache/
 *.pt
 contracts/out/

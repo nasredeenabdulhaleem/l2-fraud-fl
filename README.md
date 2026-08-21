@@ -133,6 +133,8 @@ All 4 addresses (coordinator + 3 clients) need a small amount of testnet ETH bef
 
 These keys are derived from public, non-secret seeds and/or live in a local `.env` — never fund any of them with real value, and never reuse this derivation scheme for anything beyond this testnet prototype.
 
+For convenience, `wallets.local.json` (gitignored, generated locally, never committed) holds all 4 addresses and private keys together.
+
 ## Build phases
 
 The work is structured as six sprints, each with a distinct deliverable: environment scaffolding, data and graph construction, local model development, federated integration via Flower, L2-native smart contract aggregation, and backend plus frontend visualisation. See `docs/IMPLEMENTATION_GUIDE.md` for the detailed phase-by-phase specification and acceptance criteria.
