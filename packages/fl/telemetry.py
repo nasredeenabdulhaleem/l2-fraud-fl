@@ -118,7 +118,9 @@ class TelemetryStrategy(Strategy):
                                 exc_info=True)
 
         if self.telemetry is not None:
-            record: dict[str, Scalar] = {"round": server_round, "tx_hash": tx_hash}
+            record: dict[str, Scalar] = {
+                "round": server_round, "tx_hash": tx_hash, "network": self.network,
+            }
             record.update(metrics)
             self.telemetry.emit("round_finalised", record)
         return loss, metrics
