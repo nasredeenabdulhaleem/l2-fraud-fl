@@ -87,7 +87,7 @@ python -m packages.fl.client --client-id 1 --num-clients 3 --server 127.0.0.1:80
 python -m packages.fl.client --client-id 2 --num-clients 3 --server 127.0.0.1:8080
 ```
 
-Pass `--no-telemetry` to either script to skip posting to the backend entirely.
+Pass `--no-telemetry` to either script to skip posting to the backend entirely. When the run finishes, the server saves the final aggregated model to `packages/models/checkpoints/federated_<strategy>.pt` (same checkpoint format as the baseline, so the two are directly comparable) — override the path with `--out`, or skip saving with `--no-save`.
 
 ### 5. Run with real on-chain commitments
 
