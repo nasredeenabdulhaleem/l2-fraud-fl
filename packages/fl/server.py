@@ -12,13 +12,17 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 
 import flwr as fl
-from flwr.common import Metrics
+import torch
+from flwr.common import Metrics, parameters_to_ndarrays
 
 from packages.fl import task
 from packages.fl.strategy import make_fedprox_strategy, ScaffoldStrategy
 from packages.fl.telemetry import TelemetryClient, TelemetryStrategy
+
+_CHECKPOINT_DIR = Path(__file__).parent.parent / "models" / "checkpoints"
 
 
 def weighted_average(metrics: list[tuple[int, Metrics]]) -> Metrics:
@@ -50,6 +54,11 @@ def main():
     parser.add_argument("--chain-network", choices=["arbitrum", "base"], default="arbitrum")
     parser.add_argument("--no-telemetry", action="store_true",
                          help="skip posting round events to the backend dashboard")
+    parser.add_argument("--out", default=None,
+                         help="where to save the final aggregated model "
+                              "(default: packages/models/checkpoints/federated_<strategy>.pt)")
+    parser.add_argument("--no-save", action="store_true",
+                         help="don't save the final aggregated model")
     args = parser.parse_args()
 
     initial = build_initial_model(args.in_dim)
@@ -103,11 +112,39 @@ def main():
 
     print(f"Starting Flower server: strategy={args.strategy} rounds={args.rounds} "
           f"min_clients={args.min_clients}")
-    fl.server.start_server(
+    history = fl.server.start_server(
         server_address=args.address,
         config=fl.server.ServerConfig(num_rounds=args.rounds),
         strategy=strategy,
     )
+
+    if not args.no_save:
+        final_parameters = strategy.get_final_parameters()
+        if final_parameters is None:
+            print("no aggregated parameters to save (no round completed)")
+        else:
+            model = task.build_model(in_dim=args.in_dim)
+            task.set_parameters(model, parameters_to_ndarrays(final_parameters))
+
+            out_path = Path(args.out) if args.out else _CHECKPOINT_DIR / f"federated_{args.strategy}.pt"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            last_metrics = {
+                key: values[-1][1]
+                for key, values in history.metrics_distributed.items()
+                if values
+            }
+            last_loss = history.losses_distributed[-1][1] if history.losses_distributed else None
+
+            torch.save({
+                "state_dict": model.state_dict(),
+                "in_dim": args.in_dim,
+                "strategy": args.strategy,
+                "rounds": args.rounds,
+                "min_clients": args.min_clients,
+                "metrics": {"loss": last_loss, **last_metrics},
+            }, out_path)
+            print(f"saved federated global model to {out_path}")
 
 
 if __name__ == "__main__":

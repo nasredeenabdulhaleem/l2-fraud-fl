@@ -127,3 +127,7 @@ class TelemetryStrategy(Strategy):
 
     def evaluate(self, server_round: int, parameters: Parameters):
         return self.inner.evaluate(server_round, parameters)
+
+    def get_final_parameters(self) -> Parameters | None:
+        """The most recently aggregated global model, for saving after the run."""
+        return self._last_agg_params
