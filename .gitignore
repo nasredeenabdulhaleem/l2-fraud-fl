@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 wallets.local.json
+.claude/
 data/cache/
 *.pt
 contracts/out/
