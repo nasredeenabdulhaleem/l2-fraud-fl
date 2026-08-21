@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import numpy as np
 from flwr.common import (
+    FitIns,
     FitRes,
     NDArrays,
     Parameters,
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+from flwr.server.client_manager import ClientManager
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg, FedProx
 
@@ -67,6 +69,30 @@ class ScaffoldStrategy(FedAvg):
         self.c_global: list[np.ndarray] = [np.zeros_like(p) for p in initial_parameters]
         self.global_lr = global_lr
         self._num_params = len(initial_parameters)
+
+    def configure_fit(
+        self, server_round: int, parameters: Parameters, client_manager: ClientManager
+    ) -> list[tuple[ClientProxy, FitIns]]:
+        """Send the global control variate c alongside the model, like FedAvg does.
+
+        FitIns.config only accepts scalars, not arrays, so c_global travels
+        concatenated onto parameters (mirroring the convention aggregate_fit
+        already expects on the return path: [model_params..., c_delta...]).
+        The client splits it back apart using num_params from the "scaffold"
+        config flag.
+        """
+        config = {"scaffold": True, "server_round": server_round}
+        model_params = parameters_to_ndarrays(parameters)
+        combined = ndarrays_to_parameters(model_params + self.c_global)
+        fit_ins = FitIns(combined, config)
+
+        sample_size, min_num_clients = self.num_fit_clients(
+            client_manager.num_available()
+        )
+        clients = client_manager.sample(
+            num_clients=sample_size, min_num_clients=min_num_clients
+        )
+        return [(client, fit_ins) for client in clients]
 
     def aggregate_fit(
         self,

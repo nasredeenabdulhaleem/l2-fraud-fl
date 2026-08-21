@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 
 import flwr as fl
+import numpy as np
 import torch
 
 from packages.data.graph_builder import stratified_split
@@ -40,24 +41,60 @@ class FraudFLClient(fl.client.NumPyClient):
         self.local_epochs = local_epochs
         self.lr = lr
         self.device = device
+        # SCAFFOLD's local control variate. Persists across rounds because this
+        # client object lives for the whole run (one long-running process per
+        # client under fl.client.start_client), lazily zero-initialised once the
+        # model shapes are known on the first SCAFFOLD round.
+        self.c_local: list[np.ndarray] | None = None
 
     def get_parameters(self, config):
         return task.get_parameters(self.model)
 
     def fit(self, parameters, config):
-        # Load the current global model, then train locally.
-        task.set_parameters(self.model, parameters)
-        mu = float(config.get("proximal_mu", self.proximal_mu))
+        lr = float(config.get("lr", self.lr))
+        epochs = int(config.get("local_epochs", self.local_epochs))
+
+        if config.get("scaffold"):
+            # strategy.py's ScaffoldStrategy.configure_fit concatenates the
+            # global control variate c onto parameters (FitIns.config can't
+            # carry arrays), so split it back apart here.
+            n = len(parameters) // 2
+            model_params, c_global = parameters[:n], parameters[n:]
+            mu = 0.0  # FedProx's proximal term is a separate strategy, not combined here.
+        else:
+            model_params, c_global = parameters, None
+            mu = float(config.get("proximal_mu", self.proximal_mu))
+
+        task.set_parameters(self.model, model_params)
+
+        if c_global is not None and self.c_local is None:
+            self.c_local = [np.zeros_like(p) for p in model_params]
+
         metrics = task.train(
             self.model,
             self.train_snapshots,
-            epochs=int(config.get("local_epochs", self.local_epochs)),
-            lr=float(config.get("lr", self.lr)),
+            epochs=epochs,
+            lr=lr,
             proximal_mu=mu,
-            global_params=parameters if mu > 0 else None,
+            global_params=model_params if mu > 0 else None,
+            control_variate=(self.c_local, c_global) if c_global is not None else None,
             device=self.device,
         )
-        return task.get_parameters(self.model), metrics["num_examples"], {"loss": metrics["loss"]}
+        new_params = task.get_parameters(self.model)
+
+        if c_global is not None:
+            # SCAFFOLD option-II control-variate update:
+            #   c_k_new = c_k - c + (w_global - w_local) / (K * eta_l)
+            k = metrics["num_local_steps"]
+            c_local_new = [
+                c_k - c_g + (w_g - w_l) / (k * lr)
+                for c_k, c_g, w_g, w_l in zip(self.c_local, c_global, model_params, new_params)
+            ]
+            c_delta = [new - old for new, old in zip(c_local_new, self.c_local)]
+            self.c_local = c_local_new
+            return new_params + c_delta, metrics["num_examples"], {"loss": metrics["loss"]}
+
+        return new_params, metrics["num_examples"], {"loss": metrics["loss"]}
 
     def evaluate(self, parameters, config):
         task.set_parameters(self.model, parameters)

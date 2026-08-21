@@ -59,6 +59,7 @@ def train(
     lr: float = 1e-3,
     proximal_mu: float = 0.0,
     global_params: list[np.ndarray] | None = None,
+    control_variate: tuple[list[np.ndarray], list[np.ndarray]] | None = None,
     device: str = "cpu",
 ) -> dict:
     """Train the node classifier across a client's block snapshots.
@@ -66,6 +67,12 @@ def train(
     When proximal_mu > 0 and global_params are supplied, the FedProx proximal term
     (mu / 2) * || w - w_t ||^2 is added to the local loss to penalise drift away
     from the global model, stabilising training under non-IID data.
+
+    When control_variate = (c_local, c_global) is supplied (SCAFFOLD), each step's
+    gradient is corrected by (c_global - c_local) before the optimiser step, per
+    the local update rule y <- y - eta_l * (g_k(y) - c_k + c). num_local_steps is
+    returned so the caller can compute the SCAFFOLD control-variate update, which
+    needs the count of local optimiser steps taken (K).
     """
     model.to(device).train()
     optim = torch.optim.Adam(model.parameters(), lr=lr)
@@ -74,8 +81,18 @@ def train(
     if proximal_mu > 0.0 and global_params is not None:
         ref_tensors = [torch.tensor(p, device=device) for p in global_params]
 
+    scaffold_correction = None
+    if control_variate is not None:
+        c_local, c_global = control_variate
+        c_local_t = [torch.tensor(c, device=device) for c in c_local]
+        c_global_t = [torch.tensor(c, device=device) for c in c_global]
+        scaffold_correction = [cg - cl for cl, cg in zip(
+            _iter_ref(model, c_local_t), _iter_ref(model, c_global_t)
+        )]
+
     last_loss = 0.0
     n_examples = 0
+    n_steps = 0
 
     for _ in range(epochs):
         temporal_state = None
@@ -101,7 +118,12 @@ def train(
 
             optim.zero_grad()
             loss.backward()
+            if scaffold_correction is not None:
+                for p, correction in zip(model.parameters(), scaffold_correction):
+                    if p.grad is not None:
+                        p.grad.add_(correction)
             optim.step()
+            n_steps += 1
 
             # Carry temporal state forward across blocks (detached to bound the graph).
             with torch.no_grad():
@@ -110,7 +132,7 @@ def train(
             last_loss = float(loss.detach().cpu())
             n_examples += int(mask.sum())
 
-    return {"loss": last_loss, "num_examples": max(1, n_examples)}
+    return {"loss": last_loss, "num_examples": max(1, n_examples), "num_local_steps": max(1, n_steps)}
 
 
 def _iter_ref(model: nn.Module, ref_tensors: list[torch.Tensor]):
