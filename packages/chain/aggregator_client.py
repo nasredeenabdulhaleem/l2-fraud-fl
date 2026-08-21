@@ -61,7 +61,7 @@ def model_ref(parameters: list) -> bytes:
 
 
 class AggregatorClient:
-    def __init__(self, network: str | None = None):
+    def __init__(self, network: str | None = None, private_key: str | None = None):
         network = network or os.getenv("TARGET_NETWORK", "arbitrum")
         if network == "arbitrum":
             rpc = os.environ["ARBITRUM_SEPOLIA_RPC"]
@@ -71,7 +71,10 @@ class AggregatorClient:
             address = os.environ["FLAGGREGATOR_ADDRESS_BASE"]
 
         self.w3 = Web3(Web3.HTTPProvider(rpc))
-        self.acct = self.w3.eth.account.from_key(os.environ["DEPLOYER_PRIVATE_KEY"])
+        # Defaults to the coordinator key; pass private_key explicitly to act as a
+        # different registered identity (e.g. one of the FL client dev accounts).
+        key = private_key or os.environ["DEPLOYER_PRIVATE_KEY"]
+        self.acct = self.w3.eth.account.from_key(key)
         self.contract = self.w3.eth.contract(
             address=Web3.to_checksum_address(address), abi=FLAGGREGATOR_ABI
         )
@@ -87,11 +90,25 @@ class AggregatorClient:
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         return receipt
 
+    def register_client(self, client_address: str):
+        return self._send(
+            self.contract.functions.registerClient(Web3.to_checksum_address(client_address))
+        )
+
     def open_round(self, base_ref: bytes, window_seconds: int = 3600):
         return self._send(self.contract.functions.openRound(base_ref, window_seconds))
+
+    def submit_update(self, ref: bytes):
+        return self._send(self.contract.functions.submitUpdate(ref))
 
     def finalise_round(self, global_ref: bytes):
         return self._send(self.contract.functions.finaliseRound(global_ref))
 
     def current_round(self) -> int:
         return int(self.contract.functions.currentRoundId().call())
+
+    def get_update_ref(self, round_id: int, client_address: str) -> bytes:
+        ref = self.contract.functions.getUpdateRef(
+            round_id, Web3.to_checksum_address(client_address)
+        ).call()
+        return bytes(ref)

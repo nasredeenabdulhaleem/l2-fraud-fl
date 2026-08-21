@@ -9,11 +9,17 @@ Two aggregation regimes are supported from the client side:
            parameters and the proximal coefficient mu into task.train.
   SCAFFOLD: the client additionally maintains a local control variate and returns
             its delta alongside the model delta (see strategy.py for aggregation).
+
+When chain_client is supplied, each fit() call submits a fixed-size commitment to
+this round's update on the FLAggregator contract as this client's own registered
+identity (see packages/chain/dev_accounts.py, packages/chain/register_clients.py).
+This is real per-client on-chain accountability, not just server-side bookkeeping.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 
 import flwr as fl
 import numpy as np
@@ -21,6 +27,8 @@ import torch
 
 from packages.data.graph_builder import stratified_split
 from packages.fl import task
+
+logger = logging.getLogger(__name__)
 
 
 class FraudFLClient(fl.client.NumPyClient):
@@ -33,6 +41,7 @@ class FraudFLClient(fl.client.NumPyClient):
         local_epochs: int = 3,
         lr: float = 1e-3,
         device: str = "cpu",
+        chain_client=None,
     ):
         self.model = model
         self.train_snapshots = train_snapshots
@@ -41,6 +50,7 @@ class FraudFLClient(fl.client.NumPyClient):
         self.local_epochs = local_epochs
         self.lr = lr
         self.device = device
+        self.chain_client = chain_client
         # SCAFFOLD's local control variate. Persists across rounds because this
         # client object lives for the whole run (one long-running process per
         # client under fl.client.start_client), lazily zero-initialised once the
@@ -82,6 +92,20 @@ class FraudFLClient(fl.client.NumPyClient):
         )
         new_params = task.get_parameters(self.model)
 
+        if self.chain_client is not None:
+            # Non-fatal: a chain hiccup shouldn't kill an otherwise-working FL
+            # round. The commitment is an audit-trail addition, not required for
+            # model convergence itself.
+            try:
+                from packages.chain.aggregator_client import model_ref
+
+                receipt = self.chain_client.submit_update(model_ref(new_params))
+                logger.info("submitted on-chain update commitment tx=%s",
+                            receipt.transactionHash.hex())
+            except Exception:
+                logger.warning("on-chain submit_update failed, continuing without it",
+                                exc_info=True)
+
         if c_global is not None:
             # SCAFFOLD option-II control-variate update:
             #   c_k_new = c_k - c + (w_global - w_local) / (K * eta_l)
@@ -113,6 +137,10 @@ def main():
     parser.add_argument("--client-id", type=int, required=True)
     parser.add_argument("--num-clients", type=int, default=3)
     parser.add_argument("--proximal-mu", type=float, default=0.1)
+    parser.add_argument("--on-chain", action="store_true",
+                         help="submit a commitment for each round's update on FLAggregator, "
+                              "as this client's own registered dev account")
+    parser.add_argument("--chain-network", choices=["arbitrum", "base"], default="arbitrum")
     args = parser.parse_args()
 
     # Build the client's data shard. Uses the L2 simulator by default; swap in the
@@ -129,12 +157,22 @@ def main():
     in_dim = my_stream[0].x.size(1)
     model = task.build_model(in_dim=in_dim)
 
+    chain_client = None
+    if args.on_chain:
+        from packages.chain.aggregator_client import AggregatorClient
+        from packages.chain.dev_accounts import client_account
+
+        key = client_account(args.client_id).key.hex()
+        chain_client = AggregatorClient(network=args.chain_network, private_key=key)
+        print(f"on-chain: submitting as {chain_client.acct.address}")
+
     client = FraudFLClient(
         model=model,
         train_snapshots=train_s,
         val_snapshots=val_s,
         proximal_mu=args.proximal_mu,
         device="cuda" if torch.cuda.is_available() else "cpu",
+        chain_client=chain_client,
     )
     fl.client.start_client(server_address=args.server, client=client.to_client())
 
