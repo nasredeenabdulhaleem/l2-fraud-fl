@@ -12,10 +12,10 @@ Undergraduate dissertation prototype. Author: Abdulhaleem Nasredeen Hamza (FCP/C
 | `docs/ARCHITECTURE.md` | Component boundaries and data flows |
 | `contracts/` | Solidity FLAggregator contract, Foundry tests, deploy script |
 | `packages/data/` | Elliptic loader, L2 fraud simulator, PyG graph builder, non-IID partitioner |
-| `packages/models/` | Hybrid GraphSAGE-LSTM classifier |
-| `packages/fl/` | Flower client, server, FedProx and SCAFFOLD strategies, shared task helpers |
-| `packages/chain/` | web3.py bridge to the on-chain Aggregator |
-| `backend/` | FastAPI telemetry service with a live WebSocket stream and demo mode |
+| `packages/models/` | Hybrid GraphSAGE-LSTM classifier, single-node baseline trainer (`train_baseline.py`) |
+| `packages/fl/` | Flower client, server, FedProx and SCAFFOLD strategies, shared task helpers, telemetry bridge |
+| `packages/chain/` | web3.py bridge to the on-chain Aggregator, deterministic client dev accounts, registration/smoke-test scripts |
+| `backend/` | FastAPI telemetry service with a live WebSocket stream, demo mode, and a real-event ingestion endpoint |
 | `frontend/` | React monitoring dashboard (Recharts, ethers.js) |
 
 ## Technology stack
@@ -70,6 +70,8 @@ cd frontend && npm install && npm run dev
 
 ### 4. Run a real federation
 
+Set `BACKEND_DEMO_MODE=false` in `.env` so the backend shows real round data instead of synthetic demo events (the backend from step 3 must be running — the server posts events to it automatically; see `packages/fl/telemetry.py`).
+
 Terminal A, Flower server (pick a strategy):
 
 ```bash
@@ -85,7 +87,51 @@ python -m packages.fl.client --client-id 1 --num-clients 3 --server 127.0.0.1:80
 python -m packages.fl.client --client-id 2 --num-clients 3 --server 127.0.0.1:8080
 ```
 
-Set `BACKEND_DEMO_MODE=false` in `.env` when wiring the real Flower callbacks and the on-chain event listener into the telemetry backend.
+Pass `--no-telemetry` to either script to skip posting to the backend entirely.
+
+### 5. Run with real on-chain commitments
+
+Each round can be committed on-chain for real: the coordinator opens/finalises each round, and each client submits its own commitment as its own registered identity (see [Wallet addresses](#wallet-addresses-testnet) below for who needs funding first).
+
+One-time bootstrap per network, after deploying the contract (step 2) and funding the coordinator:
+
+```bash
+python -m packages.chain.register_clients --network arbitrum   # or --network base
+```
+
+Verify the deployment and bridge work end to end before a full run:
+
+```bash
+python -m packages.chain.smoke_test --network arbitrum
+```
+
+Then add `--on-chain --chain-network arbitrum` to both the server and every client command from step 4. Each round now costs the coordinator 2 transactions (open + finalise) and each client 1 (submit) — budget testnet ETH accordingly for however many rounds you plan to run.
+
+## Wallet addresses (testnet)
+
+Two kinds of identity interact with `FLAggregator`, both testnet-only:
+
+**Coordinator** — derived from `.env`'s `DEPLOYER_PRIVATE_KEY`. Deploys the contract, registers clients, opens/finalises every round. Check the address currently configured with:
+
+```bash
+cast wallet address --private-key $DEPLOYER_PRIVATE_KEY
+```
+
+**Client dev accounts** — one per simulated FL client, deterministically derived in `packages/chain/dev_accounts.py` from `sha256("l2-fraud-fl-dev-client-{id}")`. Reproducible from the seed alone (no secret involved), so these are always the same addresses on any machine that runs this code:
+
+```bash
+python -m packages.chain.dev_accounts --num-clients 3
+```
+
+| Role | Address |
+|---|---|
+| Client 0 | `0xCF57e151Fca68e0e67dbA700Fd76c68EE75083c6` |
+| Client 1 | `0xCd0262568B9C2117C74dB6BD6D2ba78677679fe7` |
+| Client 2 | `0x87A5025C2fb76a6db4609AC78025f3a25952DA56` |
+
+All 4 addresses (coordinator + 3 clients) need a small amount of testnet ETH before `register_clients.py`, `smoke_test.py`, or any `--on-chain` run — get it from a faucet that doesn't gate on a mainnet balance (e.g. thirdweb's or the Coinbase Developer Platform faucet for the relevant testnet) and send it to each address above. The coordinator burns gas fastest (2 txs/round vs. each client's 1), so top it up more often if it runs dry mid-session.
+
+These keys are derived from public, non-secret seeds and/or live in a local `.env` — never fund any of them with real value, and never reuse this derivation scheme for anything beyond this testnet prototype.
 
 ## Build phases
 
