@@ -60,6 +60,7 @@ def train(
     proximal_mu: float = 0.0,
     global_params: list[np.ndarray] | None = None,
     control_variate: tuple[list[np.ndarray], list[np.ndarray]] | None = None,
+    temporal_window: int = 3,
     device: str = "cpu",
 ) -> dict:
     """Train the node classifier across a client's block snapshots.
@@ -73,6 +74,15 @@ def train(
     the local update rule y <- y - eta_l * (g_k(y) - c_k + c). num_local_steps is
     returned so the caller can compute the SCAFFOLD control-variate update, which
     needs the count of local optimiser steps taken (K).
+
+    Temporal conditioning uses truncated BPTT over a short rolling window of the
+    last `temporal_window` raw snapshots (recomputed fresh each step from x/
+    edge_index), so the LSTM's own weights actually receive gradient from the
+    classification loss. An earlier version fed forward_sequence's output through
+    .detach() before every use, which meant the LSTM never appeared in any
+    backward pass at all and stayed frozen at random initialisation regardless of
+    strategy. Rebuilding the window from raw snapshots each step needs no manual
+    detach bookkeeping -- each step's graph is self-contained.
     """
     model.to(device).train()
     optim = torch.optim.Adam(model.parameters(), lr=lr)
@@ -95,13 +105,16 @@ def train(
     n_steps = 0
 
     for _ in range(epochs):
-        temporal_state = None
+        window: list = []
         for snap in snapshots:
             snap = snap.to(device)
             mask = getattr(snap, "train_mask", None)
             y = snap.y
             if mask is None:
                 mask = y >= 0
+
+            window = (window + [snap])[-temporal_window:]
+            temporal_state = model.forward_sequence(window)
 
             logits = model.forward_node(snap.x, snap.edge_index, temporal_state)
             if mask.sum() == 0:
@@ -124,10 +137,6 @@ def train(
                         p.grad.add_(correction)
             optim.step()
             n_steps += 1
-
-            # Carry temporal state forward across blocks (detached to bound the graph).
-            with torch.no_grad():
-                temporal_state = model.forward_sequence([snap]).detach()
 
             last_loss = float(loss.detach().cpu())
             n_examples += int(mask.sum())
@@ -153,11 +162,13 @@ def _iter_ref(model: nn.Module, ref_tensors: list[torch.Tensor]):
 # ----------------------------------------------------------------------------
 
 @torch.no_grad()
-def evaluate(model: GNNLSTMClassifier, snapshots: list, device: str = "cpu") -> dict:
+def evaluate(
+    model: GNNLSTMClassifier, snapshots: list, temporal_window: int = 3, device: str = "cpu"
+) -> dict:
     model.to(device).eval()
     all_true, all_pred = [], []
     total_loss, n = 0.0, 0
-    temporal_state = None
+    window: list = []
 
     for snap in snapshots:
         snap = snap.to(device)
@@ -165,6 +176,12 @@ def evaluate(model: GNNLSTMClassifier, snapshots: list, device: str = "cpu") -> 
         y = snap.y
         if mask is None:
             mask = y >= 0
+
+        # Same rolling-window temporal conditioning as train(), so evaluation sees
+        # the same kind of context the model was actually trained on.
+        window = (window + [snap])[-temporal_window:]
+        temporal_state = model.forward_sequence(window)
+
         if mask.sum() == 0:
             continue
 
@@ -176,7 +193,6 @@ def evaluate(model: GNNLSTMClassifier, snapshots: list, device: str = "cpu") -> 
         preds = logits[mask].argmax(dim=1).cpu().numpy()
         all_pred.extend(preds.tolist())
         all_true.extend(y[mask].cpu().numpy().tolist())
-        temporal_state = model.forward_sequence([snap]).detach()
 
     if n == 0:
         return {"loss": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0, "num_examples": 0}
