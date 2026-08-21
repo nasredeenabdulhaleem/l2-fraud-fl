@@ -42,6 +42,7 @@ class FraudFLClient(fl.client.NumPyClient):
         lr: float = 1e-3,
         device: str = "cpu",
         chain_client=None,
+        client_id: int | None = None,
     ):
         self.model = model
         self.train_snapshots = train_snapshots
@@ -51,6 +52,11 @@ class FraudFLClient(fl.client.NumPyClient):
         self.lr = lr
         self.device = device
         self.chain_client = chain_client
+        # Included in returned metrics so the server can attribute a result back
+        # to this logical client -- Flower's own ClientProxy.cid is transport-
+        # assigned and not guaranteed to match the --client-id an operator gave
+        # each process, so telemetry/chain-address lookups can't rely on it.
+        self.client_id = client_id
         # SCAFFOLD's local control variate. Persists across rounds because this
         # client object lives for the whole run (one long-running process per
         # client under fl.client.start_client), lazily zero-initialised once the
@@ -116,9 +122,13 @@ class FraudFLClient(fl.client.NumPyClient):
             ]
             c_delta = [new - old for new, old in zip(c_local_new, self.c_local)]
             self.c_local = c_local_new
-            return new_params + c_delta, metrics["num_examples"], {"loss": metrics["loss"]}
+            return new_params + c_delta, metrics["num_examples"], {
+                "loss": metrics["loss"], "client_id": self.client_id,
+            }
 
-        return new_params, metrics["num_examples"], {"loss": metrics["loss"]}
+        return new_params, metrics["num_examples"], {
+            "loss": metrics["loss"], "client_id": self.client_id,
+        }
 
     def evaluate(self, parameters, config):
         task.set_parameters(self.model, parameters)
@@ -127,6 +137,7 @@ class FraudFLClient(fl.client.NumPyClient):
             "precision": metrics["precision"],
             "recall": metrics["recall"],
             "f1": metrics["f1"],
+            "client_id": self.client_id,
         }
 
 
@@ -173,6 +184,7 @@ def main():
         proximal_mu=args.proximal_mu,
         device="cuda" if torch.cuda.is_available() else "cpu",
         chain_client=chain_client,
+        client_id=args.client_id,
     )
     fl.client.start_client(server_address=args.server, client=client.to_client())
 

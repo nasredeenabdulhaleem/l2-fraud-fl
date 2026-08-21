@@ -18,6 +18,7 @@ from flwr.common import Metrics
 
 from packages.fl import task
 from packages.fl.strategy import make_fedprox_strategy, ScaffoldStrategy
+from packages.fl.telemetry import TelemetryClient, TelemetryStrategy
 
 
 def weighted_average(metrics: list[tuple[int, Metrics]]) -> Metrics:
@@ -44,6 +45,11 @@ def main():
     parser.add_argument("--in-dim", type=int, default=4,
                         help="node feature dim: 4 for the L2 simulator")
     parser.add_argument("--address", default=os.getenv("FL_SERVER_ADDRESS", "0.0.0.0:8080"))
+    parser.add_argument("--on-chain", action="store_true",
+                         help="open/finalise each round on FLAggregator as the coordinator")
+    parser.add_argument("--chain-network", choices=["arbitrum", "base"], default="arbitrum")
+    parser.add_argument("--no-telemetry", action="store_true",
+                         help="skip posting round events to the backend dashboard")
     args = parser.parse_args()
 
     initial = build_initial_model(args.in_dim)
@@ -63,6 +69,37 @@ def main():
             min_evaluate_clients=args.min_clients,
             evaluate_metrics_aggregation_fn=weighted_average,
         )
+
+    chain_client = None
+    if args.on_chain:
+        from packages.chain.aggregator_client import AggregatorClient
+
+        chain_client = AggregatorClient(network=args.chain_network)
+        print(f"on-chain: coordinator {chain_client.acct.address}")
+
+    # Compute each client's real dev-account address and local fraud rate for
+    # the dashboard, using the same seed/num_clients partitioning client.py
+    # uses independently -- this only reads shard statistics, it doesn't need
+    # the clients to be connected yet.
+    from packages.chain.dev_accounts import client_address
+    from packages.data.graph_builder import client_fraud_rates as compute_fraud_rates
+    from packages.data.graph_builder import partition_non_iid, simulator_to_snapshots
+    from packages.data.l2_simulator import L2FraudSimulator, SimConfig
+
+    blocks = L2FraudSimulator(SimConfig(seed=7)).generate()
+    shards = partition_non_iid(simulator_to_snapshots(blocks), num_clients=args.min_clients)
+    fraud_rates = compute_fraud_rates(shards)
+    client_addresses = {i: client_address(i) for i in range(args.min_clients)}
+    client_rates = {i: fraud_rates[i] for i in range(args.min_clients)}
+
+    strategy = TelemetryStrategy(
+        inner=strategy,
+        telemetry=None if args.no_telemetry else TelemetryClient(),
+        chain_client=chain_client,
+        client_addresses=client_addresses,
+        client_fraud_rates=client_rates,
+        network=args.chain_network,
+    )
 
     print(f"Starting Flower server: strategy={args.strategy} rounds={args.rounds} "
           f"min_clients={args.min_clients}")

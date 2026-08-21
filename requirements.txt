@@ -4,6 +4,7 @@ torch==2.2.2
 torch-geometric==2.5.3
 flwr==1.8.0
 web3==6.15.1
+requests==2.34.2
 numpy==1.26.4
 pandas==2.2.2
 scikit-learn==1.4.2

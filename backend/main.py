@@ -22,6 +22,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+_KNOWN_EVENT_TYPES = {
+    "round_opened", "update_submitted", "fraud_flagged", "round_finalised",
+}
+
 DEMO_MODE = os.getenv("BACKEND_DEMO_MODE", "true").lower() == "true"
 
 
@@ -52,6 +56,33 @@ class FederationState:
             "round_history": self.round_history[-50:],
             "fraud_alerts": self.fraud_alerts[-30:],
         }
+
+    def apply_event(self, event_type: str, data: dict) -> None:
+        """Update persisted state the same way for demo and real events, so a
+        newly connecting client's initial snapshot reflects whichever source
+        (demo_loop or a real FL run via /api/events) is actually driving it.
+        """
+        if event_type == "round_opened":
+            self.current_round = data.get("round", self.current_round)
+            for c in self.clients:
+                c["submitted"] = False
+
+        elif event_type == "update_submitted":
+            client_id = data.get("client_id")
+            client = next((c for c in self.clients if c["id"] == client_id), None)
+            if client is None:
+                client = {"id": client_id, "address": data.get("address", ""),
+                          "fraud_rate": 0.0, "submitted": False}
+                self.clients.append(client)
+            client["address"] = data.get("address", client["address"])
+            client["fraud_rate"] = data.get("fraud_rate", client["fraud_rate"])
+            client["submitted"] = True
+
+        elif event_type == "fraud_flagged":
+            self.fraud_alerts.append(data)
+
+        elif event_type == "round_finalised":
+            self.round_history.append(data)
 
 
 state = FederationState()
@@ -93,7 +124,12 @@ manager = ConnectionManager()
 # ----------------------------------------------------------------------------
 
 async def emit(event_type: str, payload: dict):
-    """Called by the FL server callbacks or the chain listener to push a real event."""
+    """Called by demo_loop or a real event source (via POST /api/events) to update
+    persisted state and push it to connected dashboards. Centralising the state
+    update here means a newly connecting client's initial snapshot is correct
+    regardless of which source is driving events.
+    """
+    state.apply_event(event_type, payload)
     await manager.broadcast({"type": event_type, "data": payload, "ts": time.time()})
 
 
@@ -113,23 +149,19 @@ async def demo_loop():
             state.current_round = 0
             state.round_history.clear()
 
-        state.current_round += 1
-        rnd = state.current_round
+        rnd = state.current_round + 1
 
         # Round opens.
         base_ref = f"0x{random.randrange(16**16):016x}"
-        for c in state.clients:
-            c["submitted"] = False
         await emit("round_opened", {"round": rnd, "base_ref": base_ref})
         await asyncio.sleep(1.2)
 
         # Clients submit updates.
         for c in state.clients:
-            c["fraud_rate"] = round(random.uniform(0.01, 0.12), 3)
-            c["submitted"] = True
+            fraud_rate = round(random.uniform(0.01, 0.12), 3)
             await emit("update_submitted", {
                 "round": rnd, "client_id": c["id"], "address": c["address"],
-                "fraud_rate": c["fraud_rate"],
+                "fraud_rate": fraud_rate,
             })
             await asyncio.sleep(0.4)
 
@@ -141,7 +173,6 @@ async def demo_loop():
                 "fraud_type": random.choice(_FRAUD_TYPES),
                 "score": round(random.uniform(0.82, 0.99), 3),
             }
-            state.fraud_alerts.append(alert)
             await emit("fraud_flagged", alert)
 
         # Round finalises with improving metrics as rounds progress.
@@ -153,7 +184,6 @@ async def demo_loop():
             "f1": round(base, 3),
             "tx_hash": f"0x{random.randrange(16**32):032x}",
         }
-        state.round_history.append(record)
         await emit("round_finalised", record)
         await asyncio.sleep(2.0)
 
@@ -191,6 +221,23 @@ def get_state():
 @app.get("/api/health")
 def health():
     return {"ok": True, "demo": DEMO_MODE}
+
+
+class EventIn(BaseModel):
+    type: str
+    data: dict
+
+
+@app.post("/api/events")
+async def post_event(event: EventIn):
+    """Ingestion point for real events from the FL server / chain bridge
+    (packages/fl/telemetry.py's TelemetryClient posts here). Runs as a separate
+    process from the FL server, so this HTTP hop is the bridge between them.
+    """
+    if event.type not in _KNOWN_EVENT_TYPES:
+        return {"ok": False, "error": f"unknown event type: {event.type}"}
+    await emit(event.type, event.data)
+    return {"ok": True}
 
 
 @app.websocket("/ws")
