@@ -15,8 +15,9 @@ Undergraduate dissertation prototype. Author: Abdulhaleem Nasredeen Hamza (FCP/C
 | `packages/models/` | Hybrid GraphSAGE-LSTM classifier, single-node baseline trainer (`train_baseline.py`) |
 | `packages/fl/` | Flower client, server, FedProx and SCAFFOLD strategies, shared task helpers, telemetry bridge |
 | `packages/chain/` | web3.py bridge to the on-chain Aggregator, deterministic client dev accounts, registration/smoke-test scripts |
-| `backend/` | FastAPI telemetry service with a live WebSocket stream, demo mode, and a real-event ingestion endpoint |
-| `frontend/` | React monitoring dashboard (Recharts, ethers.js) |
+| `backend/` | FastAPI telemetry service with a live WebSocket stream, demo mode, a real-event ingestion endpoint, and an ad-hoc transaction-scoring endpoint |
+| `frontend/` | React dashboard: live FL monitoring, plus a "Test a Transaction" tab to score a hand-built transaction and see why it was flagged |
+| `notebooks/` | `train_colab.ipynb` — trains the baseline and federated models on a Colab GPU runtime |
 
 ## Technology stack
 
@@ -33,7 +34,7 @@ pip install -e .
 cp .env.example .env    # then fill in RPC URLs and a testnet key
 ```
 
-Note: install PyTorch first if your platform needs a specific wheel, then the PyTorch Geometric companion wheels matched to your torch and CUDA build.
+Note: install PyTorch first if your platform needs a specific wheel, then the PyTorch Geometric companion wheels matched to your torch and CUDA build. No GPU handy? `notebooks/train_colab.ipynb` runs the same training (baseline + federated) on a free Colab GPU runtime and hands back checkpoints to drop into `packages/models/checkpoints/`.
 
 ### 2. Contracts (Foundry)
 
@@ -106,6 +107,19 @@ python -m packages.chain.smoke_test --network arbitrum
 ```
 
 Then add `--on-chain --chain-network arbitrum` to both the server and every client command from step 4. Each round now costs the coordinator 2 transactions (open + finalise) and each client 1 (submit) — budget testnet ETH accordingly for however many rounds you plan to run.
+
+### 6. Test a transaction
+
+The "Test a Transaction" tab in the frontend lets you hand-build a small transaction context (a target address plus its counterparty edges) and score it against a trained checkpoint, with a plain-language explanation of why it was flagged. It talks to two new backend endpoints:
+
+```
+GET  /api/checkpoints   # which checkpoints exist and whether they're scorable
+POST /api/score         # {checkpoint, target, edges: [{src, dst, value}, ...]} -> verdict
+```
+
+Only checkpoints trained on the L2 simulator's 4-feature schema (`value_in`, `value_out`, `degree_in`, `degree_out`) are scorable this way — an Elliptic-trained checkpoint's 165 features are anonymised, so there's no meaningful way to hand-type a transaction against it. `/api/checkpoints` marks each checkpoint's `scorable` field accordingly; the frontend model picker only lists the scorable ones.
+
+Reasons are computed by `packages/models/reasons.py`, not by the model itself: they're structural heuristics tied directly to the two fraud archetypes `packages/data/l2_simulator.py` injects — a closed multi-hop cycle at a near-uniform inflated value (wash trading), and a high fan-out of counterparties opened and closed within one block (a flash-loan burst). Three sample contexts (normal / wash cycle / flash loan) are built into the tab so you can see a verdict without constructing a graph by hand first.
 
 ## Wallet addresses (testnet)
 
