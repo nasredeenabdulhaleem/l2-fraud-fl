@@ -18,9 +18,11 @@ import random
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from packages.models.infer import ScoringError, available_checkpoints, score_transaction
 
 _KNOWN_EVENT_TYPES = {
     "round_opened", "update_submitted", "fraud_flagged", "round_finalised",
@@ -240,6 +242,41 @@ async def post_event(event: EventIn):
         return {"ok": False, "error": f"unknown event type: {event.type}"}
     await emit(event.type, event.data)
     return {"ok": True}
+
+
+# ----------------------------------------------------------------------------
+# Transaction scoring (ad-hoc playground, independent of the FL telemetry
+# state above -- this scores a single hand-built transaction context against a
+# trained checkpoint rather than replaying federation round events)
+# ----------------------------------------------------------------------------
+
+class ScoreEdge(BaseModel):
+    src: str
+    dst: str
+    value: float
+
+
+class ScoreRequest(BaseModel):
+    checkpoint: str
+    target: str
+    edges: list[ScoreEdge]
+
+
+@app.get("/api/checkpoints")
+def list_checkpoints():
+    return {"checkpoints": available_checkpoints()}
+
+
+@app.post("/api/score")
+def score(req: ScoreRequest):
+    try:
+        return score_transaction(
+            checkpoint_name=req.checkpoint,
+            edges_in=[e.model_dump() for e in req.edges],
+            target=req.target,
+        )
+    except ScoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.websocket("/ws")
