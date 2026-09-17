@@ -1,3 +1,5 @@
+import { apiErrorMessage } from "./apiError.js";
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export async function fetchCheckpoints() {
@@ -15,7 +17,7 @@ export async function scoreTransaction({ checkpoint, target, edges }) {
   });
   const body = await res.json();
   if (!res.ok) {
-    throw new Error(body.detail || `scoring failed (${res.status})`);
+    throw new Error(apiErrorMessage(body, `scoring failed (${res.status})`));
   }
   return body;
 }

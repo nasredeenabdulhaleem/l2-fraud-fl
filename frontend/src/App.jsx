@@ -11,6 +11,7 @@ import {
 import { useTelemetry } from "./lib/useTelemetry.js";
 import { useOnChain } from "./lib/useOnChain.js";
 import TransactionTester from "./TransactionTester.jsx";
+import FraudScreen from "./FraudScreen.jsx";
 
 function short(hex, n = 6) {
   if (!hex) return "";
@@ -71,7 +72,10 @@ export default function App() {
 
       <div className="tabs">
         <button className={`tab ${tab === "monitor" ? "active" : ""}`} onClick={() => setTab("monitor")}>
-          Live Monitor
+          Training
+        </button>
+        <button className={`tab ${tab === "fraud" ? "active" : ""}`} onClick={() => setTab("fraud")}>
+          Fraud Detection
         </button>
         <button className={`tab ${tab === "tester" ? "active" : ""}`} onClick={() => setTab("tester")}>
           Test a Transaction
@@ -211,6 +215,8 @@ export default function App() {
           </div>
         </>
       )}
+
+      {tab === "fraud" && <FraudScreen />}
 
       {tab === "tester" && <TransactionTester />}
     </div>

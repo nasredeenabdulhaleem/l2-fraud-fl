@@ -17,11 +17,19 @@ import os
 import random
 import time
 from contextlib import asynccontextmanager
+from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+# Reads .env into the process so the settings the README tells you to put there
+# (BACKEND_DEMO_MODE, FRAUD_DETECTION_MODE, ...) actually take effect. Variables
+# already exported in the shell win, so a one-off override still works.
+load_dotenv()
+
+from packages.models import detector
 from packages.models.infer import ScoringError, available_checkpoints, score_transaction
 
 _KNOWN_EVENT_TYPES = {
@@ -274,6 +282,73 @@ def score(req: ScoreRequest):
             checkpoint_name=req.checkpoint,
             edges_in=[e.model_dump() for e in req.edges],
             target=req.target,
+        )
+    except ScoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ----------------------------------------------------------------------------
+# Fraud detection sweep (simulate a block stream and let the detector flag it).
+# Separate from the telemetry state above: this runs the detector over freshly
+# simulated blocks on demand rather than replaying a federation's round events.
+# ----------------------------------------------------------------------------
+
+class FraudScanRequest(BaseModel):
+    blocks: int = Field(default=detector.DEFAULT_BLOCKS, ge=1, le=40)
+    threshold: float = Field(default=detector.DEFAULT_THRESHOLD, ge=0.0, le=1.0)
+    seed: int = Field(default=detector.DEFAULT_SEED, ge=0, le=10_000)
+    mode: str | None = None
+    checkpoint: str | None = None
+
+
+class FraudUploadRequest(BaseModel):
+    # The browser reads the file and posts its text, which keeps this a plain
+    # JSON endpoint rather than pulling in python-multipart for form uploads.
+    format: Literal["csv", "json"]
+    content: str = Field(max_length=5_000_000)
+    threshold: float = Field(default=detector.DEFAULT_THRESHOLD, ge=0.0, le=1.0)
+    mode: str | None = None
+    checkpoint: str | None = None
+
+
+@app.get("/api/fraud/config")
+def fraud_config():
+    """Which detector mode FRAUD_DETECTION_MODE selected, and what it can use."""
+    return detector.config()
+
+
+@app.get("/api/fraud/model")
+def fraud_model(checkpoint: str | None = None):
+    """The checkpoint behind model mode and the scores recorded at training time."""
+    try:
+        return detector.model_info(checkpoint)
+    except ScoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/fraud/upload")
+def fraud_upload(req: FraudUploadRequest):
+    try:
+        return detector.scan_upload(
+            content=req.content,
+            fmt=req.format,
+            threshold=req.threshold,
+            mode=req.mode,
+            checkpoint=req.checkpoint,
+        )
+    except ScoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/fraud/scan")
+def fraud_scan(req: FraudScanRequest):
+    try:
+        return detector.scan(
+            blocks=req.blocks,
+            threshold=req.threshold,
+            mode=req.mode,
+            checkpoint=req.checkpoint,
+            seed=req.seed,
         )
     except ScoringError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

@@ -51,7 +51,12 @@ def available_checkpoints() -> list[dict]:
     return out
 
 
-def _load(name: str) -> tuple[torch.nn.Module, dict]:
+def load_model(name: str) -> tuple[torch.nn.Module, dict]:
+    """Load a simulator-schema checkpoint and its metadata, cached by name.
+
+    Shared with packages/models/detector.py, which scores whole simulated blocks
+    against the same checkpoints this module scores hand-built graphs with.
+    """
     if name in _model_cache:
         return _model_cache[name]
 
@@ -115,7 +120,7 @@ def score_transaction(checkpoint_name: str, edges_in: list[dict], target: str) -
     if not edges_in:
         raise ScoringError("at least one edge is required to build a scoring context")
 
-    model, checkpoint = _load(checkpoint_name)
+    model, checkpoint = load_model(checkpoint_name)
     data, target_idx, stats = _build_graph(edges_in, target)
 
     logits = model.forward_node(data.x, data.edge_index, temporal_state=None)

@@ -12,11 +12,11 @@ Undergraduate dissertation prototype. Author: Abdulhaleem Nasredeen Hamza (FCP/C
 | `docs/ARCHITECTURE.md` | Component boundaries and data flows |
 | `contracts/` | Solidity FLAggregator contract, Foundry tests, deploy script |
 | `packages/data/` | Elliptic loader, L2 fraud simulator, PyG graph builder, non-IID partitioner |
-| `packages/models/` | Hybrid GraphSAGE-LSTM classifier, single-node baseline trainer (`train_baseline.py`) |
+| `packages/models/` | Hybrid GraphSAGE-LSTM classifier, single-node baseline trainer (`train_baseline.py`), ad-hoc scorer (`infer.py`), block-stream detector (`detector.py`) |
 | `packages/fl/` | Flower client, server, FedProx and SCAFFOLD strategies, shared task helpers, telemetry bridge |
 | `packages/chain/` | web3.py bridge to the on-chain Aggregator, deterministic client dev accounts, registration/smoke-test scripts |
 | `backend/` | FastAPI telemetry service with a live WebSocket stream, demo mode, a real-event ingestion endpoint, and an ad-hoc transaction-scoring endpoint |
-| `frontend/` | React dashboard: live FL monitoring, plus a "Test a Transaction" tab to score a hand-built transaction and see why it was flagged |
+| `frontend/` | React dashboard: a Training tab (live FL monitoring), a Fraud Detection tab (sweep a simulated block stream and inspect every flag), and a Test a Transaction tab (score a hand-built transaction) |
 | `notebooks/` | `train_colab.ipynb` — trains the baseline and federated models on a Colab GPU runtime |
 
 ## Technology stack
@@ -120,6 +120,46 @@ POST /api/score         # {checkpoint, target, edges: [{src, dst, value}, ...]} 
 Only checkpoints trained on the L2 simulator's 4-feature schema (`value_in`, `value_out`, `degree_in`, `degree_out`) are scorable this way — an Elliptic-trained checkpoint's 165 features are anonymised, so there's no meaningful way to hand-type a transaction against it. `/api/checkpoints` marks each checkpoint's `scorable` field accordingly; the frontend model picker only lists the scorable ones.
 
 Reasons are computed by `packages/models/reasons.py`, not by the model itself: they're structural heuristics tied directly to the two fraud archetypes `packages/data/l2_simulator.py` injects — a closed multi-hop cycle at a near-uniform inflated value (wash trading), and a high fan-out of counterparties opened and closed within one block (a flash-loan burst). Three sample contexts (normal / wash cycle / flash loan) are built into the tab so you can see a verdict without constructing a graph by hand first.
+
+### 7. Fraud detection screen
+
+The "Fraud Detection" tab checks every wallet in a batch of transactions and shows everything it flags, with the evidence behind each verdict: what the wallet did that block, plain-language reasons, a definition of how that kind of fraud is identified, its counterparties, and — when the answers are known — whether the flag was actually right.
+
+The detector isn't wired into a live rollup node, so transactions reach it one of two ways, chosen at the top of the screen:
+
+- **Practice transactions** — freshly simulated blocks with ground truth attached, so every check is scored for accuracy.
+- **Upload a file** — a CSV or JSON of transfers. Required columns: `from`, `to`, `value`. Optional: `block` (groups transfers checked together; defaults to one block), `is_fraud` (1/0, marking the *sending* wallet — include it to get accuracy figures), and `fraud_type` (`wash`/`flash`). The screen offers a downloadable example file with one wash-trading loop and one flash-loan burst hidden in ordinary payments. Features are derived with the same `finalise_features` the simulator uses, with repeat transfers between the same pair in a block summed into one edge. The model learned from transfers of around 1 in value, so rescale files on a very different scale before uploading.
+
+```
+GET  /api/fraud/config  # which mode is configured, and whether a scorable checkpoint exists
+GET  /api/fraud/model   # the checkpoint behind model mode and its training-time metrics
+POST /api/fraud/scan    # {blocks, threshold, seed, mode?, checkpoint?} -> detections + summary
+POST /api/fraud/upload  # {format: csv|json, content, threshold, mode?, checkpoint?}
+```
+
+Two detector modes, selected by `FRAUD_DETECTION_MODE` in `.env`:
+
+| Mode | What it does |
+|---|---|
+| `model` | Real inference. Runs the trained checkpoint over **every** address in each simulated block, through the same `forward_node` path (rolling temporal window included) that `packages/fl/task.py` trains and evaluates with. |
+| `simulated` | Synthesises verdicts from the generator's ground truth without loading a checkpoint, so the screen works before anything has been trained. Deterministic per seed, and deliberately imperfect — it misses some fraud and raises the occasional false alarm. |
+
+`FRAUD_CHECKPOINT` picks which checkpoint `model` mode uses (default `federated_fedprox`), falling back to any scorable checkpoint on disk. The dropdown on the screen overrides the mode for a single scan, so you can compare the two without restarting the backend.
+
+Both modes emit the same payload, and the summary row scores the sweep against ground truth (caught / missed / false alarms, plus precision, recall and F1). The **Missed** list shows fraudulent addresses that scored *below* the threshold — the ones that would have gone through.
+
+Note the seed: **seed 7 is the stream the federated clients train on** (`packages/fl/client.py` builds its shards from `SimConfig(seed=7)`), so scanning it in `model` mode scores the checkpoint against its own training data. The default seed is deliberately something else, which makes every scan held-out data.
+
+### 8. Evaluating a model for reporting
+
+The metrics stored in a checkpoint come from a validation split of the training stream — roughly 8 blocks, too few for a headline figure. `packages/models/evaluate.py` sweeps a checkpoint over ten independently generated streams it never saw (40 blocks each, ~120,000 wallets), and reports per-stream results, the pooled confusion matrix, pooled precision/recall/F1 and false-alarm rate, per-stream F1 mean ± standard deviation, and recall per fraud archetype:
+
+```bash
+python -m packages.models.evaluate --checkpoint baseline --out evaluation-baseline.json
+python -m packages.models.evaluate --checkpoint federated_fedprox --out evaluation-fedprox.json
+```
+
+Report the per-archetype recall alongside the pooled figures. Flash-loan centres are injected at 50x normal value across 25 counterparties and the model's inputs aren't normalised, so they sit hundreds of times outside the normal feature range and score a saturated probability of 1.0 — near-trivially separable. Wash-trade members look far closer to ordinary traffic per node, so their recall (0.94 for the current `baseline` checkpoint, versus 1.00 for flash) is the more informative measure of what the graph model has learned.
 
 ## Wallet addresses (testnet)
 

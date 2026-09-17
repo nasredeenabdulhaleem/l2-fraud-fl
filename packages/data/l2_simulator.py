@@ -24,6 +24,22 @@ import networkx as nx
 import numpy as np
 
 
+def finalise_features(g: nx.DiGraph) -> None:
+    """Derive the model's four per-node features from a block's edges.
+
+    Module-level rather than a simulator method so uploaded transaction files
+    (packages/models/detector.py) go through exactly this derivation -- a model
+    scores garbage on features computed any differently from how it trained.
+    """
+    for n in g.nodes():
+        in_edges = g.in_edges(n, data=True)
+        out_edges = g.out_edges(n, data=True)
+        g.nodes[n]["value_in"] = float(sum(d["value"] for _, _, d in in_edges))
+        g.nodes[n]["value_out"] = float(sum(d["value"] for _, _, d in out_edges))
+        g.nodes[n]["degree_in"] = g.in_degree(n)
+        g.nodes[n]["degree_out"] = g.out_degree(n)
+
+
 @dataclass
 class SimConfig:
     n_blocks: int = 40
@@ -86,15 +102,6 @@ class L2FraudSimulator:
         g.nodes[center]["is_fraud"] = 1
         g.nodes[center]["fraud_type"] = "flash"
 
-    def _finalise_features(self, g: nx.DiGraph) -> None:
-        for n in g.nodes():
-            in_edges = g.in_edges(n, data=True)
-            out_edges = g.out_edges(n, data=True)
-            g.nodes[n]["value_in"] = float(sum(d["value"] for _, _, d in in_edges))
-            g.nodes[n]["value_out"] = float(sum(d["value"] for _, _, d in out_edges))
-            g.nodes[n]["degree_in"] = g.in_degree(n)
-            g.nodes[n]["degree_out"] = g.out_degree(n)
-
     def generate(self) -> list[nx.DiGraph]:
         cfg = self.cfg
         blocks: list[nx.DiGraph] = []
@@ -104,6 +111,6 @@ class L2FraudSimulator:
                 self._inject_wash_cycle(g)
             if cfg.rng.random() < cfg.flash_rate:
                 self._inject_flash_burst(g)
-            self._finalise_features(g)
+            finalise_features(g)
             blocks.append(g)
         return blocks
